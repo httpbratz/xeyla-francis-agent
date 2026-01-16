@@ -1,0 +1,6 @@
+apiVersion: v2
+name: tgchatbot
+description: A Helm chart for TG Chatbot application
+type: application
+version: 0.3.3
+appVersion: "0.3.3"
