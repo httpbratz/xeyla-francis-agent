@@ -1,0 +1,490 @@
+# Default values for tgchatbot
+# This is a YAML-formatted file.
+
+# Global settings
+global:
+  namespace: francis-dev
+  appName: francis
+  fullnameOverride: "francis"
+  podAnnotations: {}
+  # NodeSelector pour cibler le NodePool general-purpose (EKS Auto Mode)
+  # Évite que les pods soient schedulés sur les nodes system (taint CriticalAddonsOnly)
+  nodeSelector:
+    karpenter.sh/nodepool: general-purpose
+
+# Image configuration
+image:
+  repository: 454518197567.dkr.ecr.us-east-1.amazonaws.com/tgchatbot
+  # Default fallback only. Source of truth = values-francis-<env>.yaml
+  # (bump GitOps via PR/commit: update uniquement ce fichier env)
+  tag: dev-5c19ce250af88713de4d44ccb7f997b6bd8aaf4b
+  pullPolicy: Always
+
+# Namespace
+namespace:
+  create: true
+  name: francis-dev
+
+# API Configuration
+api:
+  enabled: true
+  replicas: 3
+  # HPA pour autoscaling basé sur CPU
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 70
+  service:
+    type: LoadBalancer
+    port: 8000
+  resources:
+    requests:
+      cpu: "150m"
+      memory: "384Mi"
+    limits:
+      cpu: "2000m"
+      memory: "2Gi"
+  terminationGracePeriodSeconds: 30
+  probes:
+    readiness:
+      # Readiness probe path. Default is /health/ready (full dependency checks).
+      # For dev environments where workers/dependencies may be unstable, you can set this to /health/live
+      # to keep the API reachable while you debug.
+      path: /health/ready
+      initialDelaySeconds: 10
+      timeoutSeconds: 5
+      periodSeconds: 10
+      failureThreshold: 6
+    liveness:
+      # Liveness should stay minimal and never depend on external services.
+      path: /health/live
+      initialDelaySeconds: 20
+      timeoutSeconds: 5
+      periodSeconds: 20
+      failureThreshold: 3
+
+# Workers Configuration
+workers:
+  telegram:
+    enabled: true
+    replicas: 1  # Base replicas (KEDA will scale)
+    command: ["python", "-m", "app.worker.telegram.worker"]
+    resources:
+      requests:
+        cpu: "100m"
+        memory: "256Mi"
+      limits:
+        cpu: "2000m"
+        memory: "2Gi"
+    terminationGracePeriodSeconds: 60
+    keda:
+      enabled: true
+      minReplicas: 1
+      maxReplicas: 2
+      pollingInterval: 5
+      cooldownPeriod: 60
+      listName: "queue:chat_jobs"
+      listLength: "20"
+    pdb:
+      enabled: true
+      minAvailable: 1
+
+  write:
+    enabled: true
+    replicas: 1
+    command: ["python", "-m", "app.worker.write_worker"]
+    resources:
+      requests:
+        cpu: "300m"
+        memory: "512Mi"
+      limits:
+        cpu: "4000m"
+        memory: "4Gi"
+    terminationGracePeriodSeconds: 90
+    keda:
+      enabled: true
+      minReplicas: 1
+      maxReplicas: 5
+      pollingInterval: 2
+      cooldownPeriod: 240
+      listName: "queue:write_jobs"
+      listLength: "25"
+      advanced:
+        scaleUp:
+          stabilizationWindowSeconds: 0
+          policies:
+            - type: Percent
+              value: 200
+              periodSeconds: 15
+            - type: Pods
+              value: 50
+              periodSeconds: 15
+          selectPolicy: Max
+        scaleDown:
+          stabilizationWindowSeconds: 300
+          policies:
+            - type: Percent
+              value: 10
+              periodSeconds: 60
+          selectPolicy: Min
+    pdb:
+      enabled: true
+      minAvailable: 0
+
+  analyze:
+    enabled: true
+    replicas: 0
+    command: ["python", "-m", "app.worker.analyze_worker"]
+    resources:
+      requests:
+        cpu: "100m"
+        memory: "256Mi"
+      limits:
+        cpu: "2000m"
+        memory: "2Gi"
+    terminationGracePeriodSeconds: 60
+    keda:
+      enabled: true
+      minReplicas: 1
+      maxReplicas: 2
+      pollingInterval: 5
+      cooldownPeriod: 120
+      listName: "queue:analyze_jobs"
+      listLength: "10"
+    pdb:
+      enabled: false
+
+  persistence:
+    enabled: true
+    replicas: 0
+    command: ["python", "-m", "app.worker.persistence_worker"]
+    resources:
+      requests:
+        cpu: "100m"
+        memory: "256Mi"
+      limits:
+        cpu: "1500m"
+        memory: "1Gi"
+    terminationGracePeriodSeconds: 60
+    keda:
+      enabled: true
+      minReplicas: 1
+      maxReplicas: 1
+      pollingInterval: 5
+      cooldownPeriod: 120
+      listName: "queue:persistence_jobs"
+      listLength: "1"
+    pdb:
+      enabled: false
+
+  workflow:
+    enabled: true
+    replicas: 0
+    command: ["python", "-m", "app.worker.workflow_worker"]
+    resources:
+      requests:
+        cpu: "100m"
+        memory: "256Mi"
+      limits:
+        cpu: "2000m"
+        memory: "2Gi"
+    terminationGracePeriodSeconds: 120
+    keda:
+      enabled: true
+      minReplicas: 1
+      maxReplicas: 10
+      pollingInterval: 10
+      cooldownPeriod: 60
+      listName: "queue:workflow_jobs"
+      listLength: "5"
+    pdb:
+      enabled: false
+
+  vault:
+    enabled: true
+    replicas: 0
+    command: ["python", "-m", "app.worker.vault_worker"]
+    resources:
+      requests:
+        cpu: "100m"
+        memory: "256Mi"
+      limits:
+        cpu: "2000m"
+        memory: "2Gi"
+    terminationGracePeriodSeconds: 120
+    keda:
+      enabled: true
+      minReplicas: 1
+      maxReplicas: 5
+      pollingInterval: 10
+      cooldownPeriod: 60
+      listName: "queue:vault_jobs"
+      listLength: "5"
+    pdb:
+      enabled: false
+
+  paymentWebhook:
+    enabled: true
+    replicas: 0
+    command: ["python", "-m", "app.worker.payment_webhook_worker"]
+    resources:
+      requests:
+        cpu: "100m"
+        memory: "256Mi"
+      limits:
+        cpu: "1000m"
+        memory: "1Gi"
+    terminationGracePeriodSeconds: 60
+    keda:
+      enabled: true
+      minReplicas: 1
+      maxReplicas: 2
+      pollingInterval: 5
+      cooldownPeriod: 60
+      listName: "queue:payment_webhook_jobs"
+      listLength: "1"
+
+  deliveryRetry:
+    enabled: true
+    replicas: 0
+    command: ["python", "-m", "app.worker.delivery_retry_worker"]
+    resources:
+      requests:
+        cpu: "100m"
+        memory: "256Mi"
+      limits:
+        cpu: "1000m"
+        memory: "1Gi"
+    terminationGracePeriodSeconds: 60
+    keda:
+      enabled: true
+      minReplicas: 0
+      maxReplicas: 2
+      pollingInterval: 5
+      cooldownPeriod: 60
+      listName: "queue:delivery_retry_jobs"
+      listLength: "1"
+
+  avatar:
+    enabled: true
+    replicas: 0
+    command: ["python", "-m", "app.worker.avatar_worker"]
+    resources:
+      requests:
+        cpu: "50m"
+        memory: "192Mi"
+      limits:
+        cpu: "1000m"
+        memory: "768Mi"
+    terminationGracePeriodSeconds: 60
+    keda:
+      enabled: true
+      minReplicas: 1
+      maxReplicas: 5
+      pollingInterval: 10
+      cooldownPeriod: 60
+      listName: "queue:avatar_jobs"
+      listLength: "10"
+    pdb:
+      enabled: false
+
+  conversationSummary:
+    enabled: true
+    replicas: 0
+    command: ["python", "-m", "app.worker.conversation_summary_worker"]
+    resources:
+      requests:
+        cpu: "100m"
+        memory: "256Mi"
+      limits:
+        cpu: "1500m"
+        memory: "1Gi"
+    terminationGracePeriodSeconds: 60
+    keda:
+      enabled: true
+      minReplicas: 1
+      maxReplicas: 5
+      pollingInterval: 10
+      cooldownPeriod: 60
+      listName: "queue:conversation_summary_jobs"
+      listLength: "10"
+    pdb:
+      enabled: false
+
+  analyticsRollup:
+    enabled: true
+    replicas: 1  # Single replica (not queue-based, runs on interval)
+    command: ["python", "-m", "app.worker.analytics_rollup_worker", "--interval-seconds", "60", "--lookback-days", "14"]
+    resources:
+      requests:
+        cpu: "100m"
+        memory: "256Mi"
+      limits:
+        cpu: "1000m"
+        memory: "1Gi"
+    terminationGracePeriodSeconds: 60
+    keda:
+      enabled: false  # Not queue-based, runs on interval
+    pdb:
+      enabled: true
+      minAvailable: 1
+
+  offerTimeout:
+    enabled: true
+    replicas: 1  # Single replica (periodic DB scan, not queue-based)
+    command:
+      - "python"
+      - "-m"
+      - "app.worker.offer_timeout_worker"
+      - "--timeout-hours"
+      - "1"
+      - "--check-interval"
+      - "300"
+    resources:
+      requests:
+        cpu: "50m"
+        memory: "192Mi"
+      limits:
+        cpu: "500m"
+        memory: "512Mi"
+    terminationGracePeriodSeconds: 30
+    keda:
+      enabled: false
+    pdb:
+      enabled: true
+      minAvailable: 1
+
+# Redis configuration
+# Note: Redis est géré via External Secrets (AWS Secrets Manager)
+# Ce template est désactivé car Redis est externe
+redis:
+  enabled: false
+
+# ConfigMap values
+config:
+  environment: "dev"
+  debug: "true"
+  logLevel: "DEBUG"
+  instanceId: "francis-dev"
+  appName: "Francis"
+  appVersion: "0.1.0"
+  telegramWebhookUrl: "https://webhook.simpme.fr"
+  grokModel: "grok-2"
+  grokMaxTokens: "1024"
+  grokTemperature: "0.2"
+  deepseekModel: "deepseek-reasoner"
+  deepseekMaxTokens: "2048"
+  openaiModel: "gpt-4o-mini"
+  openaiMaxTokens: "1024"
+  configSource: "infra_api"
+  infraApiBaseUrl: "https://api.simpme.fr"
+  agentName: "francis"
+  corsOrigins: "*"
+  llmApiKeysRequireTeamResources: "true"
+  redisAddress: "redis-12583.c276.us-east-1-2.ec2.cloud.redislabs.com:12583"
+  databasePoolSize: "5"
+  databasePoolOverflow: "10"
+  workerRetryQueueTickInterval: "5"
+  workerLimitPerQueue: "10"
+  workerHeartbeatInterval: "5"
+  workerRedisRetrySleepSeconds: "5.0"
+  telegramTypingEnabled: "true"
+  telegramTypingRenewalIntervalSeconds: "5.0"
+  telegramTypingMaxConsecutiveFailures: "3"
+  telegramReplyPacingEnabled: "true"
+  telegramReplyPacingBaseSeconds: "7.2"
+  telegramReplyPacingSecondsPerUtf16Unit: "0.12"
+  telegramReplyPacingMaxSeconds: "36.0"
+  telegramReplyPacingJitterSeconds: "3.6"
+  telegramReplySplitOnPunctuation: "true"
+  telegramReplyThinkingDelayEnabled: "true"
+  maxHistoryMessages: "20"
+  writeHandoffTtlSeconds: "3600"
+  writeWorkerMaxInflightJobs: "50"
+  analyticsRollupLookbackDays: "14"
+  analyticsRollupIntervalSeconds: "60"
+  analyticsDashboardCacheTtlSeconds: "30"
+  # Dashboard read-model sync to Infra (best-effort)
+  infraDashboardSnapshotSync: "true"
+  infraDashboardSnapshotSyncIntervalSeconds: "120"
+  # Opik configuration (LLM observability)
+  opikWorkspace: "xeyla"
+  opikProjectName: "francis"
+
+migrations:
+  enabled: true
+  runAsHook: false
+
+variableMaintenance:
+  enabled: false
+  schedule: "0 2 * * *"
+  retentionDays: 90
+  consistencyCheckLimit: 1000
+  autoFix: false
+
+secrets:
+  existingSecretName: "francis-dev-secrets"
+  databaseUrl: ""
+  mongoUri: ""
+  mongoDbName: ""
+  redisUrl: ""
+  telegramWebhookUrl: ""
+  telegramWebhookSecret: ""
+  youpayWebhookSecret: ""
+  adminApiKey: ""
+  grokApiKey: ""
+  deepseekApiKey: ""
+  openaiApiKey: ""
+  betterStackSourceToken: ""
+  betterStackApiUrl: ""
+
+externalSecrets:
+  enabled: false
+  secretStoreRef:
+    kind: ClusterSecretStore
+    name: aws-secretsmanager
+  refreshInterval: 1h
+  targets:
+    appSecretsName: ""
+    redisAuthName: ""
+  aws:
+    appSecretKey: ""
+    redisAuthKey: ""
+
+keda:
+  enabled: true
+  triggerAuth:
+    enabled: true
+    secretName: redis-auth
+    usernameKey: username
+    passwordKey: password
+
+redisAuth:
+  username: "default"
+  password: ""
+  existingSecretName: "redis-auth"
+
+monitoring:
+  enabled: true
+  prometheus:
+    enabled: false
+    replicas: 1
+    retention: "30d"
+    resources:
+      requests:
+        memory: "512Mi"
+        cpu: "250m"
+      limits:
+        memory: "2Gi"
+        cpu: "1000m"
+  grafana:
+    enabled: false
+    replicas: 1
+    resources:
+      requests:
+        memory: "256Mi"
+        cpu: "100m"
+      limits:
+        memory: "512Mi"
+        cpu: "500m"
